@@ -331,7 +331,7 @@ const colors = {
   text: "#171717",
   textMuted: "#737373",
   textLight: "#a3a3a3",
-  available: "#E6F7EC",       // Light green — selectable
+  available: "#ffffff",       // White — selectable (with green border)
   availableBorder: "#A3CD39",
   selected: "#A3CD39",          // Solid brand green — selected
   selectedText: "#1a3d00",
@@ -1122,7 +1122,6 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "12px", flexWrap: "wrap" }}>
                       <div>
                         <div style={{ fontSize: "14px", fontWeight: 500, color: colors.text }}>{r.name}</div>
-                        {r.email && <div style={{ fontSize: "12px", color: colors.textMuted }}>{r.email}</div>}
                       </div>
                       <div style={{ fontSize: "12px", color: colors.textMuted }}>
                         {(r.selectedSlots || []).length} slots · submitted in {tzLabel} · {new Date(r.submittedAt).toLocaleDateString("en-CA")}
@@ -1198,7 +1197,6 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
   const poll = useMemo(() => normalizePoll(rawPoll), [rawPoll]);
   const [step, setStep] = useState("intro"); // intro → select → done
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
   const [note, setNote] = useState("");
   const [viewTz, setViewTz] = useState(poll.timezone); // Default to organizer's TZ
   const [selectedUTCs, setSelectedUTCs] = useState(new Set());
@@ -1277,7 +1275,6 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
     const response = {
       id: genId(),
       name: name.trim(),
-      email: email.trim(),
       note: note.trim(),
       timezone: viewTz,
       selectedSlots: Array.from(selectedUTCs),
@@ -1333,10 +1330,6 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
                 <input type="text" value={name} onChange={(e) => setName(e.target.value)} autoFocus style={inputStyle} placeholder="Alex Smith" />
               </div>
               <div>
-                <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Email (optional)</label>
-                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} placeholder="alex@example.com" />
-              </div>
-              <div>
                 <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Your time zone</label>
                 <select value={viewTz} onChange={(e) => setViewTz(e.target.value)} style={inputStyle}>
                   {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
@@ -1368,7 +1361,7 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
         </header>
         <main style={{ maxWidth: "480px", margin: "0 auto", padding: "64px 24px", textAlign: "center" }}>
           <div style={{ background: "white", border: `1px solid ${colors.border}`, borderRadius: "12px", padding: "40px 28px" }}>
-            <div style={{ width: "56px", height: "56px", borderRadius: "50%", background: colors.available, display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: "16px" }}>
+            <div style={{ width: "56px", height: "56px", borderRadius: "50%", background: "#E6F7EC", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: "16px" }}>
               <Check size={28} style={{ color: colors.selectedText }} />
             </div>
             <h1 style={{ fontSize: "20px", fontWeight: 500, margin: "0 0 8px", color: colors.text }}>Thanks, {name.split(" ")[0]}!</h1>
