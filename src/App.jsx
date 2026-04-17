@@ -226,39 +226,57 @@ const summarizeDates = (dates) => {
   return `${first} – ${last} · ${sorted.length} ${sorted.length === 1 ? "date" : "dates"}`;
 };
 
+// Get the UTC offset (in minutes) for a given instant in a given IANA timezone.
+// Positive means timezone is ahead of UTC (e.g., Asia/Tokyo = +540); negative means behind (e.g., America/Toronto = -240 or -300).
+const getTimezoneOffsetMinutes = (utcMs, timezone) => {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const parts = dtf.formatToParts(new Date(utcMs));
+  const v = {};
+  parts.forEach(p => { if (p.type !== "literal") v[p.type] = p.value; });
+  const asUtcOfLocalTime = Date.UTC(+v.year, +v.month - 1, +v.day, +v.hour, +v.minute, +v.second);
+  return (asUtcOfLocalTime - utcMs) / 60000;
+};
+
 // Convert a slot (date + hour + minute in a source TZ) to a UTC timestamp
 const slotToUTC = (dateStr, hour, minute, timezone) => {
-  // Build a string like "2026-04-20 14:30" and interpret it in the source timezone
-  const tempDate = new Date(`${dateStr}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
-  // Get the offset of the target timezone at that date
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  });
-  const parts = formatter.formatToParts(tempDate);
-  const vals = {};
-  parts.forEach(p => { if (p.type !== "literal") vals[p.type] = p.value; });
-  const asUTC = Date.UTC(+vals.year, +vals.month - 1, +vals.day, +vals.hour, +vals.minute, +vals.second);
-  const offset = asUTC - tempDate.getTime();
-  return tempDate.getTime() - offset;
+  // Start with a UTC guess: treat the local date/time as if it were UTC
+  const guessUtc = Date.UTC(
+    +dateStr.slice(0, 4),
+    +dateStr.slice(5, 7) - 1,
+    +dateStr.slice(8, 10),
+    hour, minute, 0
+  );
+  // The real UTC time = guess minus the offset of the source timezone at that instant.
+  // Two iterations handle DST transitions where the offset changes across the guess.
+  let offset1 = getTimezoneOffsetMinutes(guessUtc, timezone);
+  let real = guessUtc - offset1 * 60000;
+  let offset2 = getTimezoneOffsetMinutes(real, timezone);
+  if (offset1 !== offset2) {
+    real = guessUtc - offset2 * 60000;
+  }
+  return real;
 };
 
 // Convert a UTC timestamp to { date, hour, minute } in target timezone
 const utcToSlot = (utcMs, timezone) => {
-  const d = new Date(utcMs);
-  const formatter = new Intl.DateTimeFormat("en-CA", {
+  const dtf = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
+    hourCycle: "h23",
     year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hour12: false,
+    hour: "2-digit", minute: "2-digit",
   });
-  const parts = formatter.formatToParts(d);
-  const vals = {};
-  parts.forEach(p => { if (p.type !== "literal") vals[p.type] = p.value; });
+  const parts = dtf.formatToParts(new Date(utcMs));
+  const v = {};
+  parts.forEach(p => { if (p.type !== "literal") v[p.type] = p.value; });
   return {
-    date: `${vals.year}-${vals.month}-${vals.day}`,
-    hour: +vals.hour,
-    minute: +vals.minute,
+    date: `${v.year}-${v.month}-${v.day}`,
+    hour: +v.hour,
+    minute: +v.minute,
   };
 };
 
@@ -857,6 +875,7 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
   const poll = useMemo(() => normalizePoll(rawPoll), [rawPoll]);
   const [viewTz, setViewTz] = useState(poll.timezone);
   const [copied, setCopied] = useState(false);
+  const [hoveredSlot, setHoveredSlot] = useState(null); // { utc, x, y, date, hour, minute }
 
   const shareLink = `${window.location.origin}${window.location.pathname}#poll/${poll.id}`;
 
@@ -1048,11 +1067,22 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
                           const slot = grouped[d].find(s => s.hour === hh && s.minute === mm);
                           if (!slot) return <div key={d} style={{ background: "#f5f5f5", borderRadius: "4px" }} />;
                           const count = slotCounts[slot.utc] || 0;
-                          const whoList = responses.filter(r => (r.selectedSlots || []).includes(slot.utc)).map(r => r.name);
                           return (
                             <div
                               key={d}
-                              title={count > 0 ? `${count} available: ${whoList.join(", ")}` : "No one available"}
+                              onMouseEnter={(e) => {
+                                if (count === 0) return;
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setHoveredSlot({
+                                  utc: slot.utc,
+                                  x: rect.left + rect.width / 2,
+                                  y: rect.top,
+                                  date: d,
+                                  hour: hh,
+                                  minute: mm,
+                                });
+                              }}
+                              onMouseLeave={() => setHoveredSlot(null)}
                               style={{
                                 padding: "4px 6px",
                                 fontSize: "12px",
@@ -1063,6 +1093,8 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
                                 color: count > maxCount * 0.5 ? colors.selectedText : colors.text,
                                 fontWeight: count > 0 ? 500 : 400,
                                 cursor: count > 0 ? "help" : "default",
+                                outline: hoveredSlot?.utc === slot.utc ? `2px solid ${colors.brandBlue}` : "none",
+                                outlineOffset: "-1px",
                               }}
                             >
                               {count > 0 ? count : "·"}
@@ -1104,6 +1136,59 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
           </div>
         )}
       </main>
+
+      {hoveredSlot && (() => {
+        const who = responses
+          .filter(r => (r.selectedSlots || []).includes(hoveredSlot.utc))
+          .map(r => r.name);
+        if (who.length === 0) return null;
+
+        // Position: try above the cell; if too high (near top of viewport), show below instead
+        const showBelow = hoveredSlot.y < 160;
+        const tooltipStyle = {
+          position: "fixed",
+          left: hoveredSlot.x,
+          top: showBelow ? hoveredSlot.y + 32 : hoveredSlot.y - 12,
+          transform: showBelow ? "translateX(-50%)" : "translate(-50%, -100%)",
+          background: "#1a1a1a",
+          color: "white",
+          padding: "10px 12px",
+          borderRadius: "8px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+          zIndex: 100,
+          pointerEvents: "none",
+          maxWidth: "280px",
+          fontSize: "12px",
+          lineHeight: 1.45,
+        };
+        return (
+          <div style={tooltipStyle}>
+            <div style={{ fontSize: "11px", color: "#bbb", marginBottom: "4px", fontVariantNumeric: "tabular-nums" }}>
+              {formatDate(hoveredSlot.date)} · {formatTime(hoveredSlot.hour, hoveredSlot.minute)}
+            </div>
+            <div style={{ fontSize: "12px", fontWeight: 500, marginBottom: "6px" }}>
+              {who.length} available
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+              {who.map((name, i) => (
+                <span
+                  key={i}
+                  style={{
+                    background: "rgba(163, 205, 57, 0.2)",
+                    color: "#c7e07a",
+                    padding: "2px 8px",
+                    borderRadius: "10px",
+                    fontSize: "11px",
+                    fontWeight: 500,
+                  }}
+                >
+                  {name}
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
