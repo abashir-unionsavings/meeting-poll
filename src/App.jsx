@@ -18,6 +18,15 @@ const CANADIAN_TIMEZONES = [
   { value: "America/Whitehorse", label: "Yukon (MST, no DST)", abbr: "YT" },
 ];
 
+// Meeting length options
+const MEETING_LENGTHS = [
+  { value: "30min", label: "30 minutes", slotsNeeded: 1 },
+  { value: "1hr", label: "1 hour", slotsNeeded: 2 },
+  { value: "2hr", label: "2 hours", slotsNeeded: 4 },
+  { value: "allday", label: "All day", slotsNeeded: 0 }, // 0 means day-based, not slot-based
+];
+const isAllDay = (poll) => poll?.meetingLength === "allday";
+
 // =============== LOGO (SVG recreation of Union Savings mark) ===============
 const Logo = ({ size = 40, bg = "#000" }) => (
   <svg width={size} height={size} viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
@@ -60,6 +69,7 @@ const pollFromDb = (row) => ({
   timezone: row.timezone,
   startHour: row.start_hour,
   endHour: row.end_hour,
+  meetingLength: row.meeting_length || "30min", // "30min" | "1hr" | "2hr" | "allday"
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
   updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : null,
   responses: {}, // loaded separately
@@ -123,6 +133,7 @@ const db = {
       timezone: poll.timezone,
       start_hour: poll.startHour,
       end_hour: poll.endHour,
+      meeting_length: poll.meetingLength || "30min",
     });
     if (error) throw error;
   },
@@ -138,6 +149,7 @@ const db = {
         timezone: poll.timezone,
         start_hour: poll.startHour,
         end_hour: poll.endHour,
+        meeting_length: poll.meetingLength || "30min",
         updated_at: new Date().toISOString(),
       })
       .eq("id", poll.id);
@@ -467,6 +479,7 @@ function PollFormModal({ existingPoll, onClose, onSave }) {
   const [timezone, setTimezone] = useState(normalized?.timezone || "America/Toronto");
   const [startHour, setStartHour] = useState(normalized?.startHour ?? 9);
   const [endHour, setEndHour] = useState(normalized?.endHour ?? 17);
+  const [meetingLength, setMeetingLength] = useState(normalized?.meetingLength || "30min");
   const [error, setError] = useState("");
 
   // Month navigation for the calendar picker
@@ -492,7 +505,8 @@ function PollFormModal({ existingPoll, onClose, onSave }) {
     return (
       timezone !== normalized.timezone ||
       startHour !== normalized.startHour ||
-      endHour !== normalized.endHour
+      endHour !== normalized.endHour ||
+      meetingLength !== normalized.meetingLength
     );
   })();
 
@@ -550,11 +564,11 @@ function PollFormModal({ existingPoll, onClose, onSave }) {
   const submit = () => {
     if (!title.trim()) return setError("Please enter a meeting title");
     if (selectedDates.size === 0) return setError("Please pick at least one date");
-    if (startHour >= endHour) return setError("End hour must be after start hour");
+    if (meetingLength !== "allday" && startHour >= endHour) return setError("End hour must be after start hour");
 
     if (isEdit && scheduleChanged && responseCount > 0) {
       const confirmed = confirm(
-        `You've changed the schedule (dates, hours, or time zone) and this poll has ${responseCount} ${responseCount === 1 ? "response" : "responses"}.\n\nSlots participants selected that fall outside the new schedule will be dropped. Slots that still fit will be kept.\n\nContinue?`
+        `You've changed the schedule and this poll has ${responseCount} ${responseCount === 1 ? "response" : "responses"}.\n\nResponses that fall outside the new schedule will be dropped. Valid ones will be kept.\n\nContinue?`
       );
       if (!confirmed) return;
     }
@@ -570,26 +584,37 @@ function PollFormModal({ existingPoll, onClose, onSave }) {
         timezone,
         startHour,
         endHour,
+        meetingLength,
         updatedAt: Date.now(),
       };
-      // Remove legacy fields to avoid confusion
       delete updated.startDate;
       delete updated.endDate;
 
-      // Rebuild valid UTC slots under new schedule and filter responses
-      const validSlots = new Set();
-      for (const dateStr of datesArr) {
-        for (let h = startHour; h < endHour; h++) {
-          for (const m of [0, 30]) {
-            validSlots.add(slotToUTC(dateStr, h, m, timezone));
+      // Rebuild valid responses under new schedule
+      const newResponses = {};
+      if (meetingLength === "allday") {
+        // All-day: valid "slots" are date strings
+        const validDates = new Set(datesArr);
+        Object.entries(existingPoll.responses || {}).forEach(([rid, r]) => {
+          // Filter: keep selections that are valid dates. Legacy responses with UTC timestamps are dropped.
+          const filtered = (r.selectedSlots || []).filter(s => typeof s === "string" && validDates.has(s));
+          newResponses[rid] = { ...r, selectedSlots: filtered };
+        });
+      } else {
+        // Time-based: valid slots are UTC timestamps within new date range + hour range
+        const validSlots = new Set();
+        for (const dateStr of datesArr) {
+          for (let h = startHour; h < endHour; h++) {
+            for (const m of [0, 30]) {
+              validSlots.add(slotToUTC(dateStr, h, m, timezone));
+            }
           }
         }
+        Object.entries(existingPoll.responses || {}).forEach(([rid, r]) => {
+          const filtered = (r.selectedSlots || []).filter(utc => typeof utc === "number" && validSlots.has(utc));
+          newResponses[rid] = { ...r, selectedSlots: filtered };
+        });
       }
-      const newResponses = {};
-      Object.entries(existingPoll.responses || {}).forEach(([rid, r]) => {
-        const filtered = (r.selectedSlots || []).filter(utc => validSlots.has(utc));
-        newResponses[rid] = { ...r, selectedSlots: filtered };
-      });
       updated.responses = newResponses;
 
       onSave(updated);
@@ -602,6 +627,7 @@ function PollFormModal({ existingPoll, onClose, onSave }) {
         timezone,
         startHour,
         endHour,
+        meetingLength,
         createdAt: Date.now(),
         responses: {},
       };
@@ -740,6 +766,20 @@ function PollFormModal({ existingPoll, onClose, onSave }) {
           </div>
 
           <div>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Meeting length *</label>
+            <select value={meetingLength} onChange={(e) => setMeetingLength(e.target.value)} style={inputStyle}>
+              {MEETING_LENGTHS.map(ml => <option key={ml.value} value={ml.value}>{ml.label}</option>)}
+            </select>
+            <p style={{ fontSize: "12px", color: colors.textMuted, margin: "6px 0 0" }}>
+              {meetingLength === "allday"
+                ? "Participants will pick whole days — no time selection."
+                : meetingLength === "30min"
+                ? "Participants pick 30-minute slots."
+                : `Participants pick 30-minute slots. For a ${meetingLength === "1hr" ? "1-hour" : "2-hour"} meeting, they'll need at least ${meetingLength === "1hr" ? "2" : "4"} consecutive slots.`}
+            </p>
+          </div>
+
+          <div>
             <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Your time zone *</label>
             <select value={timezone} onChange={(e) => setTimezone(e.target.value)} style={inputStyle}>
               {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
@@ -747,20 +787,22 @@ function PollFormModal({ existingPoll, onClose, onSave }) {
             <p style={{ fontSize: "12px", color: colors.textMuted, margin: "6px 0 0" }}>Participants default to this time zone but can switch their own view.</p>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-            <div>
-              <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Earliest hour</label>
-              <select value={startHour} onChange={(e) => setStartHour(+e.target.value)} style={inputStyle}>
-                {Array.from({ length: 24 }, (_, i) => <option key={i} value={i}>{formatTime(i, 0)}</option>)}
-              </select>
+          {meetingLength !== "allday" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Earliest hour</label>
+                <select value={startHour} onChange={(e) => setStartHour(+e.target.value)} style={inputStyle}>
+                  {Array.from({ length: 24 }, (_, i) => <option key={i} value={i}>{formatTime(i, 0)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Latest hour</label>
+                <select value={endHour} onChange={(e) => setEndHour(+e.target.value)} style={inputStyle}>
+                  {Array.from({ length: 24 }, (_, i) => <option key={i} value={i + 1}>{formatTime(i + 1, 0)}</option>)}
+                </select>
+              </div>
             </div>
-            <div>
-              <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Latest hour</label>
-              <select value={endHour} onChange={(e) => setEndHour(+e.target.value)} style={inputStyle}>
-                {Array.from({ length: 24 }, (_, i) => <option key={i} value={i + 1}>{formatTime(i + 1, 0)}</option>)}
-              </select>
-            </div>
-          </div>
+          )}
 
           {isEdit && scheduleChanged && responseCount > 0 && (
             <div style={{ fontSize: "13px", color: "#92400e", background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: "8px", padding: "10px 12px", margin: 0 }}>
@@ -891,6 +933,7 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
   // Build all possible slots in admin's viewing TZ
   // Each slot across days at start/end hours, converted to UTC via poll.timezone reference
   const slots = useMemo(() => {
+    if (isAllDay(poll)) return [];
     const result = [];
     // Generate slots in the ORIGINAL poll timezone, then we'll display them in viewTz
     for (const dateStr of dates) {
@@ -939,12 +982,20 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
     return colors.heatmap[idx];
   };
 
-  // Find best slots (highest count)
+  // Find best slots (highest count). For all-day polls, keys are date strings; for time-based polls, UTC numbers.
   const bestSlots = useMemo(() => {
-    const entries = Object.entries(slotCounts).map(([utc, count]) => ({ utc: +utc, count }));
-    entries.sort((a, b) => b.count - a.count || a.utc - b.utc);
+    const entries = Object.entries(slotCounts).map(([k, count]) => ({
+      utc: isAllDay(poll) ? k : +k,
+      count,
+    }));
+    entries.sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      // tiebreak: earliest first
+      if (isAllDay(poll)) return String(a.utc).localeCompare(String(b.utc));
+      return a.utc - b.utc;
+    });
     return entries.slice(0, 5);
-  }, [slotCounts]);
+  }, [slotCounts, poll]);
 
   return (
     <div style={{ minHeight: "100vh", background: "#fafafa", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
@@ -968,7 +1019,7 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
               <h1 style={{ fontSize: "20px", fontWeight: 500, margin: "0 0 6px", color: colors.text }}>{poll.title}</h1>
               {poll.description && <p style={{ fontSize: "14px", color: colors.textMuted, margin: "0 0 10px" }}>{poll.description}</p>}
               <div style={{ fontSize: "13px", color: colors.textMuted }}>
-                {summarizeDates(poll.dates)} · {formatTime(poll.startHour, 0)} to {formatTime(poll.endHour, 0)} · Organizer TZ: {CANADIAN_TIMEZONES.find(t => t.value === poll.timezone)?.abbr}
+                {summarizeDates(poll.dates)} · {isAllDay(poll) ? "All day" : `${formatTime(poll.startHour, 0)} to ${formatTime(poll.endHour, 0)}`} · Organizer TZ: {CANADIAN_TIMEZONES.find(t => t.value === poll.timezone)?.abbr}
               </div>
             </div>
             <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
@@ -984,19 +1035,74 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: "24px", marginTop: "20px", flexWrap: "wrap" }}>
-            <div>
+          <div style={{ display: "flex", gap: "24px", marginTop: "20px", flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div style={{ minWidth: "100px" }}>
               <div style={{ fontSize: "11px", color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 500 }}>Responses</div>
               <div style={{ fontSize: "26px", fontWeight: 500, color: colors.text, marginTop: "2px" }}>{responses.length}</div>
             </div>
+
             {bestSlots[0]?.count > 0 && (
-              <div>
-                <div style={{ fontSize: "11px", color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 500 }}>Most popular slot</div>
-                <div style={{ fontSize: "16px", fontWeight: 500, color: colors.text, marginTop: "6px" }}>
-                  {(() => {
-                    const s = utcToSlot(bestSlots[0].utc, viewTz);
-                    return `${formatDate(s.date)} · ${formatTime(s.hour, s.minute)} (${bestSlots[0].count} available)`;
-                  })()}
+              <div style={{ flex: 1, minWidth: "280px" }}>
+                <div style={{ fontSize: "11px", color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 500, marginBottom: "8px" }}>
+                  Top {Math.min(3, bestSlots.filter(b => b.count > 0).length)} most popular {bestSlots.filter(b => b.count > 0).length === 1 ? "slot" : "slots"}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {bestSlots.filter(b => b.count > 0).slice(0, 3).map((b, idx) => {
+                    const isDay = isAllDay(poll);
+                    const label = isDay
+                      ? formatDateLong(b.utc)
+                      : (() => {
+                          const s = utcToSlot(b.utc, viewTz);
+                          return `${formatDate(s.date)} · ${formatTime(s.hour, s.minute)}`;
+                        })();
+                    const who = responses.filter(r => (r.selectedSlots || []).includes(b.utc)).map(r => r.name);
+                    const rankColors = [
+                      { bg: "#FEF3C7", text: "#92400E" },   // gold
+                      { bg: "#E5E7EB", text: "#374151" },   // silver
+                      { bg: "#FED7AA", text: "#9A3412" },   // bronze
+                    ];
+                    const rc = rankColors[idx] || rankColors[2];
+                    return (
+                      <div
+                        key={String(b.utc)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "10px",
+                          padding: "8px 12px",
+                          background: "#fafafa",
+                          border: `1px solid ${colors.border}`,
+                          borderRadius: "8px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            background: rc.bg,
+                            color: rc.text,
+                            width: "22px",
+                            height: "22px",
+                            borderRadius: "50%",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: "12px",
+                            fontWeight: 500,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {idx + 1}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: "14px", fontWeight: 500, color: colors.text }}>
+                            {label}
+                          </div>
+                          <div style={{ fontSize: "12px", color: colors.textMuted, marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {b.count} of {responses.length} available{who.length > 0 ? ` · ${who.join(", ")}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1004,13 +1110,15 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
         </div>
 
         {/* Viewing timezone */}
-        <div style={{ background: "white", borderRadius: "12px", border: `1px solid ${colors.border}`, padding: "18px 24px", marginBottom: "20px", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          <Globe size={16} style={{ color: colors.textMuted }} />
-          <span style={{ fontSize: "13px", color: colors.textMuted }}>View times in:</span>
-          <select value={viewTz} onChange={(e) => setViewTz(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: "13px" }}>
-            {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
-          </select>
-        </div>
+        {!isAllDay(poll) && (
+          <div style={{ background: "white", borderRadius: "12px", border: `1px solid ${colors.border}`, padding: "18px 24px", marginBottom: "20px", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            <Globe size={16} style={{ color: colors.textMuted }} />
+            <span style={{ fontSize: "13px", color: colors.textMuted }}>View times in:</span>
+            <select value={viewTz} onChange={(e) => setViewTz(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: "13px" }}>
+              {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+            </select>
+          </div>
+        )}
 
         {/* Heatmap grid */}
         {responses.length === 0 ? (
@@ -1023,6 +1131,63 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
               <button onClick={copyLink} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px" }}>
                 {copied ? <Check size={14} /> : <Copy size={14} />}
               </button>
+            </div>
+          </div>
+        ) : isAllDay(poll) ? (
+          /* All-day: date-card grid with counts */
+          <div style={{ background: "white", borderRadius: "12px", border: `1px solid ${colors.border}`, padding: "20px", marginBottom: "20px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
+              <h3 style={{ fontSize: "15px", fontWeight: 500, margin: 0 }}>Availability by day</h3>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: colors.textMuted }}>
+                <span>Fewer</span>
+                {colors.heatmap.map((c, i) => (
+                  <div key={i} style={{ width: "18px", height: "14px", background: c, border: `1px solid ${colors.border}` }} />
+                ))}
+                <span>More available</span>
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "10px" }}>
+              {poll.dates.map(d => {
+                const count = slotCounts[d] || 0;
+                return (
+                  <div
+                    key={d}
+                    onMouseEnter={(e) => {
+                      if (count === 0) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setHoveredSlot({
+                        utc: d, // date string for all-day
+                        x: rect.left + rect.width / 2,
+                        y: rect.top,
+                        date: d,
+                        hour: null,
+                        minute: null,
+                      });
+                    }}
+                    onMouseLeave={() => setHoveredSlot(null)}
+                    style={{
+                      padding: "14px 12px",
+                      background: getHeatColor(count),
+                      borderRadius: "10px",
+                      border: `1px solid ${colors.border}`,
+                      textAlign: "center",
+                      cursor: count > 0 ? "help" : "default",
+                      outline: hoveredSlot?.utc === d ? `2px solid ${colors.brandBlue}` : "none",
+                      outlineOffset: "-1px",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", fontWeight: 500, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "3px" }}>
+                      {new Date(d + "T00:00:00").toLocaleDateString("en-CA", { weekday: "short" })}
+                    </div>
+                    <div style={{ fontSize: "16px", fontWeight: 500, color: colors.text, marginBottom: "6px" }}>
+                      {new Date(d + "T00:00:00").toLocaleDateString("en-CA", { month: "short", day: "numeric" })}
+                    </div>
+                    <div style={{ fontSize: "13px", fontWeight: 500, color: count > maxCount * 0.5 ? colors.selectedText : colors.text }}>
+                      {count > 0 ? `${count} of ${responses.length}` : "—"}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : (
@@ -1124,7 +1289,7 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
                         <div style={{ fontSize: "14px", fontWeight: 500, color: colors.text }}>{r.name}</div>
                       </div>
                       <div style={{ fontSize: "12px", color: colors.textMuted }}>
-                        {(r.selectedSlots || []).length} slots · submitted in {tzLabel} · {new Date(r.submittedAt).toLocaleDateString("en-CA")}
+                        {(r.selectedSlots || []).length} {isAllDay(poll) ? "days" : "slots"}{isAllDay(poll) ? "" : ` · submitted in ${tzLabel}`} · {new Date(r.submittedAt).toLocaleDateString("en-CA")}
                       </div>
                     </div>
                     {r.note && <div style={{ fontSize: "13px", color: colors.textMuted, marginTop: "6px", fontStyle: "italic" }}>"{r.note}"</div>}
@@ -1163,7 +1328,9 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
         return (
           <div style={tooltipStyle}>
             <div style={{ fontSize: "11px", color: "#bbb", marginBottom: "4px", fontVariantNumeric: "tabular-nums" }}>
-              {formatDate(hoveredSlot.date)} · {formatTime(hoveredSlot.hour, hoveredSlot.minute)}
+              {hoveredSlot.hour === null
+                ? formatDateLong(hoveredSlot.date)
+                : `${formatDate(hoveredSlot.date)} · ${formatTime(hoveredSlot.hour, hoveredSlot.minute)}`}
             </div>
             <div style={{ fontSize: "12px", fontWeight: 500, marginBottom: "6px" }}>
               {who.length} available
@@ -1206,6 +1373,7 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
 
   // Build available slots (in poll's original TZ) → UTC timestamps
   const allSlots = useMemo(() => {
+    if (isAllDay(poll)) return [];
     const result = [];
     for (const dateStr of dates) {
       for (let h = poll.startHour; h < poll.endHour; h++) {
@@ -1232,6 +1400,14 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
 
   const sortedDates = Object.keys(grouped).sort();
 
+  // Detect touch-only devices. Desktops with a mouse keep drag-to-select;
+  // phones and tablets get per-cell tapping (no drag) so scrolling still works
+  // and accidental selections don't happen.
+  const isTouchDevice = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+  }, []);
+
   const toggleSlot = useCallback((utc) => {
     setSelectedUTCs(prev => {
       const next = new Set(prev);
@@ -1242,6 +1418,11 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
   }, []);
 
   const handleMouseDown = (utc) => {
+    if (isTouchDevice) {
+      // On touch: a press is just a toggle; no drag-sweep
+      toggleSlot(utc);
+      return;
+    }
     const mode = selectedUTCs.has(utc) ? "remove" : "add";
     setDragging({ mode });
     setSelectedUTCs(prev => {
@@ -1253,6 +1434,7 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
   };
 
   const handleMouseEnter = (utc) => {
+    if (isTouchDevice) return;
     if (!dragging) return;
     setSelectedUTCs(prev => {
       const next = new Set(prev);
@@ -1271,7 +1453,7 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
 
   const submit = () => {
     if (!name.trim()) return alert("Please enter your name.");
-    if (selectedUTCs.size === 0) return alert("Please select at least one time slot.");
+    if (selectedUTCs.size === 0) return alert(isAllDay(poll) ? "Please select at least one day." : "Please select at least one time slot.");
     const response = {
       id: genId(),
       name: name.trim(),
@@ -1317,11 +1499,13 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                <Clock size={13} /> {formatTime(poll.startHour, 0)} – {formatTime(poll.endHour, 0)}
+                <Clock size={13} /> {isAllDay(poll) ? "All day" : `${formatTime(poll.startHour, 0)} – ${formatTime(poll.endHour, 0)}`}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <Globe size={13} /> Organizer's time zone: {tzLabel}
-              </div>
+              {!isAllDay(poll) && (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <Globe size={13} /> Organizer's time zone: {tzLabel}
+                </div>
+              )}
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -1329,15 +1513,17 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
                 <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Your name *</label>
                 <input type="text" value={name} onChange={(e) => setName(e.target.value)} autoFocus style={inputStyle} placeholder="Alex Smith" />
               </div>
-              <div>
-                <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Your time zone</label>
-                <select value={viewTz} onChange={(e) => setViewTz(e.target.value)} style={inputStyle}>
-                  {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
-                </select>
-                <p style={{ fontSize: "12px", color: colors.textMuted, margin: "6px 0 0" }}>
-                  Defaulted to the organizer's zone. You can change it — times will convert automatically.
-                </p>
-              </div>
+              {!isAllDay(poll) && (
+                <div>
+                  <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "6px" }}>Your time zone</label>
+                  <select value={viewTz} onChange={(e) => setViewTz(e.target.value)} style={inputStyle}>
+                    {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+                  </select>
+                  <p style={{ fontSize: "12px", color: colors.textMuted, margin: "6px 0 0" }}>
+                    Defaulted to the organizer's zone. You can change it — times will convert automatically.
+                  </p>
+                </div>
+              )}
               <button onClick={() => { if (!name.trim()) return alert("Please enter your name."); setStep("select"); }} style={{ ...primaryBtn, marginTop: "8px" }}>
                 Continue to calendar
               </button>
@@ -1398,15 +1584,25 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
       <main style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 24px 120px" }}>
         <div style={{ background: "white", border: `1px solid ${colors.border}`, borderRadius: "12px", padding: "16px 20px", marginBottom: "16px", display: "flex", flexWrap: "wrap", gap: "12px 20px", alignItems: "center", justifyContent: "space-between" }}>
           <div>
-            <h2 style={{ fontSize: "16px", fontWeight: 500, margin: "0 0 4px", color: colors.text }}>Select all times you're available</h2>
-            <p style={{ fontSize: "13px", color: colors.textMuted, margin: 0 }}>Click or drag to select. Green = available.</p>
+            <h2 style={{ fontSize: "16px", fontWeight: 500, margin: "0 0 4px", color: colors.text }}>
+              {isAllDay(poll) ? "Select the days you're available" : "Select all times you're available"}
+            </h2>
+            <p style={{ fontSize: "13px", color: colors.textMuted, margin: 0 }}>
+              {isAllDay(poll)
+                ? "Tap any day to toggle. Green = available."
+                : poll.meetingLength === "30min"
+                ? (isTouchDevice ? "Tap each slot to select. Green = available." : "Click or drag to select. Green = available.")
+                : `This meeting is ${poll.meetingLength === "1hr" ? "1 hour" : "2 hours"} — please pick ${poll.meetingLength === "1hr" ? "at least 2 consecutive" : "at least 4 consecutive"} slots where you're free.`}
+            </p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <Globe size={14} style={{ color: colors.textMuted }} />
-            <select value={viewTz} onChange={(e) => setViewTz(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: "13px" }}>
-              {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
-            </select>
-          </div>
+          {!isAllDay(poll) && (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Globe size={14} style={{ color: colors.textMuted }} />
+              <select value={viewTz} onChange={(e) => setViewTz(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: "13px" }}>
+                {CANADIAN_TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Legend */}
@@ -1420,59 +1616,102 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
             Your selection
           </span>
           <span style={{ marginLeft: "auto", fontWeight: 500, color: colors.text }}>
-            {selectedUTCs.size} {selectedUTCs.size === 1 ? "slot" : "slots"} selected
+            {selectedUTCs.size} {isAllDay(poll)
+              ? (selectedUTCs.size === 1 ? "day" : "days")
+              : (selectedUTCs.size === 1 ? "slot" : "slots")} selected
           </span>
         </div>
 
-        {/* Calendar grid */}
-        <div style={{ background: "white", border: `1px solid ${colors.border}`, borderRadius: "12px", padding: "16px", overflowX: "auto" }}>
-          <div style={{ display: "inline-block", minWidth: "100%" }}>
-            {/* Header: dates */}
-            <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${sortedDates.length}, minmax(90px, 1fr))`, gap: "3px", marginBottom: "3px", position: "sticky", top: 0, background: "white", zIndex: 2 }}>
-              <div style={{ fontSize: "11px", color: colors.textMuted, padding: "6px 4px", textAlign: "right" }}>{tzLabel}</div>
-              {sortedDates.map(d => (
-                <div key={d} style={{ padding: "8px 4px", fontSize: "12px", fontWeight: 500, textAlign: "center", color: colors.text, background: "#fafafa", borderRadius: "6px" }}>
-                  {formatDate(d)}
-                </div>
-              ))}
+        {isAllDay(poll) ? (
+          /* All-day: grid of date cards */
+          <div style={{ background: "white", border: `1px solid ${colors.border}`, borderRadius: "12px", padding: "16px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "10px" }}>
+              {poll.dates.map(d => {
+                const isSel = selectedUTCs.has(d);
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => {
+                      setSelectedUTCs(prev => {
+                        const next = new Set(prev);
+                        if (next.has(d)) next.delete(d);
+                        else next.add(d);
+                        return next;
+                      });
+                    }}
+                    style={{
+                      padding: "16px 12px",
+                      background: isSel ? colors.selected : colors.available,
+                      border: `1px solid ${isSel ? colors.brandGreen : colors.availableBorder}`,
+                      borderRadius: "10px",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      textAlign: "center",
+                      transition: "transform 0.05s",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", fontWeight: 500, color: isSel ? colors.selectedText : colors.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>
+                      {new Date(d + "T00:00:00").toLocaleDateString("en-CA", { weekday: "short" })}
+                    </div>
+                    <div style={{ fontSize: "18px", fontWeight: 500, color: isSel ? colors.selectedText : colors.text }}>
+                      {new Date(d + "T00:00:00").toLocaleDateString("en-CA", { month: "short", day: "numeric" })}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
-
-            {/* Time rows */}
-            {times.map(tkey => {
-              const [hh, mm] = tkey.split(":").map(Number);
-              return (
-                <div key={tkey} style={{ display: "grid", gridTemplateColumns: `72px repeat(${sortedDates.length}, minmax(90px, 1fr))`, gap: "3px", marginBottom: "3px" }}>
-                  <div style={{ padding: "4px 6px", fontSize: "11px", color: colors.textMuted, textAlign: "right", fontVariantNumeric: "tabular-nums", alignSelf: "center" }}>
-                    {mm === 0 && formatTime(hh, mm)}
-                  </div>
-                  {sortedDates.map(d => {
-                    const slot = grouped[d].find(s => s.hour === hh && s.minute === mm);
-                    if (!slot) return <div key={d} style={{ background: "#f5f5f5", borderRadius: "4px", minHeight: "28px" }} />;
-                    const isSelected = selectedUTCs.has(slot.utc);
-                    return (
-                      <div
-                        key={d}
-                        onMouseDown={() => handleMouseDown(slot.utc)}
-                        onMouseEnter={() => handleMouseEnter(slot.utc)}
-                        onTouchStart={(e) => { e.preventDefault(); handleMouseDown(slot.utc); }}
-                        style={{
-                          minHeight: "28px",
-                          background: isSelected ? colors.selected : colors.available,
-                          border: isSelected ? `1px solid ${colors.brandGreen}` : `1px solid ${colors.availableBorder}`,
-                          borderRadius: "4px",
-                          cursor: "pointer",
-                          transition: "transform 0.05s",
-                          transform: isSelected ? "scale(1)" : "scale(1)",
-                        }}
-                        title={`${formatDate(d)} ${formatTime(hh, mm)} ${tzLabel}`}
-                      />
-                    );
-                  })}
-                </div>
-              );
-            })}
           </div>
-        </div>
+        ) : (
+          /* Time-based: the original grid */
+          <div style={{ background: "white", border: `1px solid ${colors.border}`, borderRadius: "12px", padding: "16px", overflowX: "auto" }}>
+            <div style={{ display: "inline-block", minWidth: "100%" }}>
+              {/* Header: dates */}
+              <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${sortedDates.length}, minmax(90px, 1fr))`, gap: "3px", marginBottom: "3px", position: "sticky", top: 0, background: "white", zIndex: 2 }}>
+                <div style={{ fontSize: "11px", color: colors.textMuted, padding: "6px 4px", textAlign: "right" }}>{tzLabel}</div>
+                {sortedDates.map(d => (
+                  <div key={d} style={{ padding: "8px 4px", fontSize: "12px", fontWeight: 500, textAlign: "center", color: colors.text, background: "#fafafa", borderRadius: "6px" }}>
+                    {formatDate(d)}
+                  </div>
+                ))}
+              </div>
+
+              {/* Time rows */}
+              {times.map(tkey => {
+                const [hh, mm] = tkey.split(":").map(Number);
+                return (
+                  <div key={tkey} style={{ display: "grid", gridTemplateColumns: `72px repeat(${sortedDates.length}, minmax(90px, 1fr))`, gap: "3px", marginBottom: "3px" }}>
+                    <div style={{ padding: "4px 6px", fontSize: "11px", color: colors.textMuted, textAlign: "right", fontVariantNumeric: "tabular-nums", alignSelf: "center" }}>
+                      {mm === 0 && formatTime(hh, mm)}
+                    </div>
+                    {sortedDates.map(d => {
+                      const slot = grouped[d].find(s => s.hour === hh && s.minute === mm);
+                      if (!slot) return <div key={d} style={{ background: "#f5f5f5", borderRadius: "4px", minHeight: "28px" }} />;
+                      const isSelected = selectedUTCs.has(slot.utc);
+                      return (
+                        <div
+                          key={d}
+                          onClick={isTouchDevice ? () => toggleSlot(slot.utc) : undefined}
+                          onMouseDown={!isTouchDevice ? () => handleMouseDown(slot.utc) : undefined}
+                          onMouseEnter={!isTouchDevice ? () => handleMouseEnter(slot.utc) : undefined}
+                          style={{
+                            minHeight: isTouchDevice ? "36px" : "28px",
+                            background: isSelected ? colors.selected : colors.available,
+                            border: isSelected ? `1px solid ${colors.brandGreen}` : `1px solid ${colors.availableBorder}`,
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                            touchAction: "manipulation",
+                          }}
+                          title={`${formatDate(d)} ${formatTime(hh, mm)} ${tzLabel}`}
+                        />
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Optional note */}
         <div style={{ marginTop: "16px" }}>
@@ -1485,7 +1724,9 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "white", borderTop: `1px solid ${colors.border}`, padding: "14px 24px", boxShadow: "0 -2px 12px rgba(0,0,0,0.04)" }}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
           <div style={{ fontSize: "14px", color: colors.text }}>
-            <strong style={{ fontWeight: 500 }}>{selectedUTCs.size}</strong> <span style={{ color: colors.textMuted }}>{selectedUTCs.size === 1 ? "slot" : "slots"} selected in {tzLabel}</span>
+            <strong style={{ fontWeight: 500 }}>{selectedUTCs.size}</strong> <span style={{ color: colors.textMuted }}>{isAllDay(poll)
+              ? (selectedUTCs.size === 1 ? "day selected" : "days selected")
+              : `${selectedUTCs.size === 1 ? "slot" : "slots"} selected in ${tzLabel}`}</span>
           </div>
           <button onClick={submit} disabled={selectedUTCs.size === 0} style={{ ...primaryBtn, opacity: selectedUTCs.size === 0 ? 0.5 : 1, cursor: selectedUTCs.size === 0 ? "not-allowed" : "pointer" }}>
             Submit availability
