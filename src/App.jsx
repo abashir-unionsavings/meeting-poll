@@ -1206,7 +1206,7 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
               <div style={{ display: "inline-block", minWidth: "100%" }}>
                 {/* Header row: dates */}
                 <div style={{ display: "grid", gridTemplateColumns: `80px repeat(${sortedDates.length}, minmax(110px, 1fr))`, gap: "2px", marginBottom: "2px" }}>
-                  <div></div>
+                  <div style={{ position: "sticky", left: 0, background: "white", zIndex: 2 }}></div>
                   {sortedDates.map(d => (
                     <div key={d} style={{ padding: "6px 4px", fontSize: "12px", fontWeight: 500, textAlign: "center", color: colors.text, background: "#fafafa", borderRadius: "4px" }}>
                       {formatDate(d)}
@@ -1225,7 +1225,7 @@ function AdminPollDetail({ poll: rawPoll, onBack, onDelete, onEdit }) {
                     const [hh, mm] = tkey.split(":").map(Number);
                     return (
                       <div key={tkey} style={{ display: "grid", gridTemplateColumns: `80px repeat(${sortedDates.length}, minmax(110px, 1fr))`, gap: "2px", marginBottom: "2px" }}>
-                        <div style={{ padding: "4px 6px", fontSize: "11px", color: colors.textMuted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                        <div style={{ padding: "4px 6px", fontSize: "11px", color: colors.textMuted, textAlign: "right", fontVariantNumeric: "tabular-nums", position: "sticky", left: 0, background: "white", zIndex: 1 }}>
                           {formatTime(hh, mm)}
                         </div>
                         {sortedDates.map(d => {
@@ -1667,8 +1667,8 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
           <div style={{ background: "white", border: `1px solid ${colors.border}`, borderRadius: "12px", padding: "16px", overflowX: "auto" }}>
             <div style={{ display: "inline-block", minWidth: "100%" }}>
               {/* Header: dates */}
-              <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${sortedDates.length}, minmax(90px, 1fr))`, gap: "3px", marginBottom: "3px", position: "sticky", top: 0, background: "white", zIndex: 2 }}>
-                <div style={{ fontSize: "11px", color: colors.textMuted, padding: "6px 4px", textAlign: "right" }}>{tzLabel}</div>
+              <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${sortedDates.length}, minmax(90px, 1fr))`, gap: "3px", marginBottom: "3px", position: "sticky", top: 0, background: "white", zIndex: 3 }}>
+                <div style={{ fontSize: "11px", color: colors.textMuted, padding: "6px 4px", textAlign: "right", position: "sticky", left: 0, background: "white", zIndex: 4 }}>{tzLabel}</div>
                 {sortedDates.map(d => (
                   <div key={d} style={{ padding: "8px 4px", fontSize: "12px", fontWeight: 500, textAlign: "center", color: colors.text, background: "#fafafa", borderRadius: "6px" }}>
                     {formatDate(d)}
@@ -1681,7 +1681,7 @@ function ParticipantView({ poll: rawPoll, onSubmit }) {
                 const [hh, mm] = tkey.split(":").map(Number);
                 return (
                   <div key={tkey} style={{ display: "grid", gridTemplateColumns: `72px repeat(${sortedDates.length}, minmax(90px, 1fr))`, gap: "3px", marginBottom: "3px" }}>
-                    <div style={{ padding: "4px 6px", fontSize: "11px", color: colors.textMuted, textAlign: "right", fontVariantNumeric: "tabular-nums", alignSelf: "center" }}>
+                    <div style={{ padding: "4px 6px", fontSize: "11px", color: colors.textMuted, textAlign: "right", fontVariantNumeric: "tabular-nums", alignSelf: "center", position: "sticky", left: 0, background: "white", zIndex: 2 }}>
                       {mm === 0 && formatTime(hh, mm)}
                     </div>
                     {sortedDates.map(d => {
